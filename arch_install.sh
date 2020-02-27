@@ -1,16 +1,16 @@
 #!/bin/bash
 # Copyright (c) 2012 Tom Wambold
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -31,33 +31,32 @@
 #    setup_lvm - Customize for partitions inside LVM
 #    install_packages - Customize packages installed in base system
 #                       (desktop environment, etc.)
-#    install_aur_packages - More packages after packer (AUR helper) is
-#                           installed
-#    set_netcfg - Preload netcfg profiles
 
 ## CONFIGURE THESE VARIABLES
 ## ALSO LOOK AT THE install_packages FUNCTION TO SEE WHAT IS ACTUALLY INSTALLED
 
 # Drive to install to.
-DRIVE='/dev/sda'
+DRIVE='/dev/nvme0n1'
+BOOT_DEV="${DRIVE}p1" # Should be appended with just '1' for /dev/sd*
+LVM_DEV="${DRIVE}p2"  # and 'p[1|2]' for /dev/nvme0n1
 
 # Hostname of the installed machine.
-HOSTNAME='host100'
+HOSTNAME='computer'
 
 # Encrypt everything (except /boot).  Leave blank to disable.
 ENCRYPT_DRIVE='TRUE'
 
 # Passphrase used to encrypt the drive (leave blank to be prompted).
-DRIVE_PASSPHRASE='a'
+DRIVE_PASSPHRASE=''
 
 # Root password (leave blank to be prompted).
-ROOT_PASSWORD='a'
+ROOT_PASSWORD=''
 
 # Main user to create (by default, added to wheel group, and others).
 USER_NAME='user'
 
 # The main user's password (leave blank to be prompted).
-USER_PASSWORD='a'
+USER_PASSWORD=''
 
 # System timezone.
 TIMEZONE='America/New_York'
@@ -66,8 +65,8 @@ TIMEZONE='America/New_York'
 # Only leave this blank on systems with very little RAM.
 TMP_ON_TMPFS='TRUE'
 
-KEYMAP='us'
-# KEYMAP='dvorak'
+#KEYMAP='us'
+KEYMAP='dvorak'
 
 # Choose your video driver
 # For Intel
@@ -79,14 +78,7 @@ VIDEO_DRIVER="i915"
 # For generic stuff
 #VIDEO_DRIVER="vesa"
 
-# Wireless device, leave blank to not use wireless and use DHCP instead.
-WIRELESS_DEVICE="wlan0"
-# For tc4200's
-#WIRELESS_DEVICE="eth1"
-
 setup() {
-    local boot_dev="$DRIVE"1
-    local lvm_dev="$DRIVE"2
 
     echo 'Creating partitions'
     partition_drive "$DRIVE"
@@ -104,20 +96,20 @@ setup() {
         fi
 
         echo 'Encrypting partition'
-        encrypt_drive "$lvm_dev" "$DRIVE_PASSPHRASE" lvm
+        encrypt_drive "$DRIVE_PASSPHRASE" lvm
 
     else
-        local lvm_part="$lvm_dev"
+        local lvm_part="$LVM_DEV"
     fi
 
     echo 'Setting up LVM'
     setup_lvm "$lvm_part" vg00
 
     echo 'Formatting filesystems'
-    format_filesystems "$boot_dev"
+    format_filesystems
 
     echo 'Mounting filesystems'
-    mount_filesystems "$boot_dev"
+    mount_filesystems
 
     echo 'Installing base system'
     install_base
@@ -138,17 +130,9 @@ setup() {
 }
 
 configure() {
-    local boot_dev="$DRIVE"1
-    local lvm_dev="$DRIVE"2
 
     echo 'Installing additional packages'
     install_packages
-
-    echo 'Installing packer'
-    install_packer
-
-    echo 'Installing AUR packages'
-    install_aur_packages
 
     echo 'Clearing package tarballs'
     clean_packages
@@ -172,7 +156,7 @@ configure() {
     set_hosts "$HOSTNAME"
 
     echo 'Setting fstab'
-    set_fstab "$TMP_ON_TMPFS" "$boot_dev"
+    set_fstab "$TMP_ON_TMPFS"
 
     echo 'Setting initial modules to load'
     set_modules_load
@@ -184,19 +168,10 @@ configure() {
     set_daemons "$TMP_ON_TMPFS"
 
     echo 'Configuring bootloader'
-    set_syslinux "$lvm_dev"
+    set_syslinux
 
     echo 'Configuring sudo'
     set_sudoers
-
-    echo 'Configuring slim'
-    set_slim
-
-    if [ -n "$WIRELESS_DEVICE" ]
-    then
-        echo 'Configuring netcfg'
-        set_netcfg
-    fi
 
     if [ -z "$ROOT_PASSWORD" ]
     then
@@ -237,12 +212,18 @@ partition_drive() {
 }
 
 encrypt_drive() {
-    local dev="$1"; shift
     local passphrase="$1"; shift
     local name="$1"; shift
 
-    echo -en "$passphrase" | cryptsetup -c aes-xts-plain -y -s 512 luksFormat "$dev"
-    echo -en "$passphrase" | cryptsetup luksOpen "$dev" lvm
+#    LVM_UUID=$(get_uuid "$LVM_DEV")
+#    if [ -z "${LVM_UUID}" ]
+#    then
+#        echo "ERROR: LVM UUID not returned"
+#        exit -1
+#    fi
+
+    echo -en "$passphrase" | cryptsetup -c aes-xts-plain -y -s 512 luksFormat "$LVM_DEV"
+    echo -en "$passphrase" | cryptsetup luksOpen "$LVM_DEV" lvm
 }
 
 setup_lvm() {
@@ -263,19 +244,15 @@ setup_lvm() {
 }
 
 format_filesystems() {
-    local boot_dev="$1"; shift
-
-    mkfs.ext2 -L boot "$boot_dev"
+    mkfs.ext2 -L boot "${BOOT_DEV}"
     mkfs.ext4 -L root /dev/vg00/root
     mkswap /dev/vg00/swap
 }
 
 mount_filesystems() {
-    local boot_dev="$1"; shift
-
     mount /dev/vg00/root /mnt
     mkdir /mnt/boot
-    mount "$boot_dev" /mnt/boot
+    mount "${BOOT_DEV}" /mnt/boot
     swapon /dev/vg00/swap
 }
 
@@ -301,31 +278,13 @@ install_packages() {
     local packages=''
 
     # General utilities/libraries
-    packages+=' alsa-utils aspell-en chromium cpupower gvim mlocate net-tools ntp openssh p7zip pkgfile powertop python python2 rfkill rsync sudo unrar unzip wget zip systemd-sysvcompat zsh grml-zsh-config'
+    packages+=' linux linux-firmware lvm2 mkinitcpio cronie vim alsa-utils aspell-en cpupower mlocate iproute2 ntp openssh p7zip pkgfile powertop python python2 rfkill rsync sudo unrar unzip wget zip systemd-sysvcompat zsh grml-zsh-config git nano'
 
-    # Development packages
-    packages+=' apache-ant cmake gdb git maven mercurial subversion tcpdump valgrind wireshark-gtk'
-
-    # Netcfg
-    if [ -n "$WIRELESS_DEVICE" ]
-    then
-        packages+=' netcfg ifplugd dialog wireless_tools wpa_actiond wpa_supplicant'
-    fi
-
-    # Java stuff
-    packages+=' icedtea-web-java7 jdk7-openjdk jre7-openjdk'
-
-    # Libreoffice
-    packages+=' libreoffice-calc libreoffice-en-US libreoffice-gnome libreoffice-impress libreoffice-writer hunspell-en hyphen-en mythes-en'
-
-    # Misc programs
-    packages+=' mplayer pidgin vlc xscreensaver gparted dosfstools ntfsprogs'
+    # Network Manager
+    packages+=' networkmanager nm-connection-editor network-manager-applet'
 
     # Xserver
     packages+=' xorg-apps xorg-server xorg-xinit xterm'
-
-    # Slim login manager
-    packages+=' slim archlinux-themes-slim'
 
     # Fonts
     packages+=' ttf-dejavu ttf-liberation'
@@ -334,7 +293,7 @@ install_packages() {
     packages+=' intel-ucode'
 
     # For laptops
-    packages+=' xf86-input-synaptics'
+    packages+=' xf86-input-libinput'
 
     # Extra packages for tc4200 tablet
     #packages+=' ipw2200-fw xf86-input-wacom'
@@ -354,27 +313,6 @@ install_packages() {
     fi
 
     pacman -Sy --noconfirm $packages
-}
-
-install_packer() {
-    mkdir /foo
-    cd /foo
-    curl https://aur.archlinux.org/packages/pa/packer/packer.tar.gz | tar xzf -
-    cd packer
-    makepkg -si --noconfirm --asroot
-
-    cd /
-    rm -rf /foo
-}
-
-install_aur_packages() {
-    mkdir /foo
-    export TMPDIR=/foo
-    packer -S --noconfirm android-udev
-    packer -S --noconfirm chromium-pepper-flash-stable
-    packer -S --noconfirm chromium-libpdf-stable
-    unset TMPDIR
-    rm -rf /foo
 }
 
 clean_packages() {
@@ -419,9 +357,8 @@ EOF
 
 set_fstab() {
     local tmp_on_tmpfs="$1"; shift
-    local boot_dev="$1"; shift
 
-    local boot_uuid=$(get_uuid "$boot_dev")
+    local boot_uuid=$(get_uuid "${BOOT_DEV}")
 
     cat > /etc/fstab <<EOF
 #
@@ -543,14 +480,7 @@ EOF
 set_daemons() {
     local tmp_on_tmpfs="$1"; shift
 
-    systemctl enable cronie.service cpupower.service ntpd.service slim.service
-
-    if [ -n "$WIRELESS_DEVICE" ]
-    then
-        systemctl enable net-auto-wired.service net-auto-wireless.service
-    else
-        systemctl enable dhcpcd@eth0.service
-    fi
+    systemctl enable cronie.service cpupower.service ntpd.service NetworkManager
 
     if [ -z "$tmp_on_tmpfs" ]
     then
@@ -559,15 +489,21 @@ set_daemons() {
 }
 
 set_syslinux() {
-    local lvm_dev="$1"; shift
 
-    local lvm_uuid=$(get_uuid "$lvm_dev")
+    local lvm_uuid=$(get_uuid "$LVM_DEV")
 
     local crypt=""
     if [ -n "$ENCRYPT_DRIVE" ]
     then
         # Load in resources
-        crypt="cryptdevice=/dev/disk/by-uuid/$lvm_uuid:lvm"
+
+        if [ -z "${lvm_uuid}" ]
+        then
+            echo "ERROR: LVM UUID not set"
+            exit -1
+        fi
+
+        crypt="cryptdevice=/dev/disk/by-uuid/${lvm_uuid}:lvm"
     fi
 
     cat > /boot/syslinux/syslinux.cfg <<EOF
@@ -593,13 +529,13 @@ set_syslinux() {
 # The wiki provides further configuration examples
 
 DEFAULT arch
-PROMPT 0        # Set to 1 if you always want to display the boot: prompt 
+PROMPT 0        # Set to 1 if you always want to display the boot: prompt
 TIMEOUT 50
 # You can create syslinux keymaps with the keytab-lilo tool
 #KBDMAP de.ktl
 
 # Menu Configuration
-# Either menu.c32 or vesamenu32.c32 must be copied to /boot/syslinux 
+# Either menu.c32 or vesamenu32.c32 must be copied to /boot/syslinux
 UI menu.c32
 #UI vesamenu.c32
 
@@ -625,7 +561,7 @@ MENU COLOR tabmsg       31;40   #30ffffff #00000000 std
 LABEL arch
 	MENU LABEL Arch Linux
 	LINUX ../vmlinuz-linux
-	APPEND root=/dev/vg00/root ro $crypt resume=/dev/vg00/swap quiet
+	APPEND root=/dev/vg00/root ro $crypt resume=/dev/vg00/swap
 	INITRD ../initramfs-linux.img
 
 LABEL archfallback
@@ -692,7 +628,7 @@ set_sudoers() {
 # Defaults env_keep += "LANG LANGUAGE LINGUAS LC_* _XKB_CHARSET"
 ##
 ## Run X applications through sudo; HOME is used to find the
-## .Xauthority file.  Note that other programs use HOME to find   
+## .Xauthority file.  Note that other programs use HOME to find
 ## configuration files and this may lead to privilege escalation!
 # Defaults env_keep += "HOME"
 ##
@@ -726,10 +662,10 @@ set_sudoers() {
 root ALL=(ALL) ALL
 
 ## Uncomment to allow members of group wheel to execute any command
-%wheel ALL=(ALL) ALL
+# wheel ALL=(ALL) ALL
 
 ## Same thing without a password
-# %wheel ALL=(ALL) NOPASSWD: ALL
+%wheel ALL=(ALL) NOPASSWD: ALL
 
 ## Uncomment to allow members of group sudo to execute any command
 # %sudo ALL=(ALL) ALL
@@ -750,131 +686,6 @@ EOF
     chmod 440 /etc/sudoers
 }
 
-set_slim() {
-    cat > /etc/slim.conf <<EOF
-# Path, X server and arguments (if needed)
-# Note: -xauth $authfile is automatically appended
-default_path        /bin:/usr/bin:/usr/local/bin
-default_xserver     /usr/bin/X
-xserver_arguments -nolisten tcp vt07
-
-# Commands for halt, login, etc.
-halt_cmd            /sbin/poweroff
-reboot_cmd          /sbin/reboot
-console_cmd         /usr/bin/xterm -C -fg white -bg black +sb -T "Console login" -e /bin/sh -c "/bin/cat /etc/issue; exec /bin/login"
-suspend_cmd         /usr/bin/systemctl hybrid-sleep
-
-# Full path to the xauth binary
-xauth_path         /usr/bin/xauth 
-
-# Xauth file for server
-authfile           /var/run/slim.auth
-
-# Activate numlock when slim starts. Valid values: on|off
-# numlock             on
-
-# Hide the mouse cursor (note: does not work with some WMs).
-# Valid values: true|false
-# hidecursor          false
-
-# This command is executed after a succesful login.
-# you can place the %session and %theme variables
-# to handle launching of specific commands in .xinitrc
-# depending of chosen session and slim theme
-#
-# NOTE: if your system does not have bash you need
-# to adjust the command according to your preferred shell,
-# i.e. for freebsd use:
-# login_cmd           exec /bin/sh - ~/.xinitrc %session
-# login_cmd           exec /bin/bash -login ~/.xinitrc %session
-login_cmd           exec /bin/zsh -l ~/.xinitrc %session
-
-# Commands executed when starting and exiting a session.
-# They can be used for registering a X11 session with
-# sessreg. You can use the %user variable
-#
-# sessionstart_cmd	some command
-# sessionstop_cmd	some command
-
-# Start in daemon mode. Valid values: yes | no
-# Note that this can be overriden by the command line
-# options "-d" and "-nodaemon"
-# daemon	yes
-
-# Available sessions (first one is the default).
-# The current chosen session name is replaced in the login_cmd
-# above, so your login command can handle different sessions.
-# see the xinitrc.sample file shipped with slim sources
-sessions            foo
-
-# Executed when pressing F11 (requires imagemagick)
-#screenshot_cmd      import -window root /slim.png
-
-# welcome message. Available variables: %host, %domain
-welcome_msg         %host
-
-# Session message. Prepended to the session name when pressing F1
-# session_msg         Session: 
-
-# shutdown / reboot messages
-shutdown_msg       The system is shutting down...
-reboot_msg         The system is rebooting...
-
-# default user, leave blank or remove this line
-# for avoid pre-loading the username.
-#default_user        simone
-
-# Focus the password field on start when default_user is set
-# Set to "yes" to enable this feature
-#focus_password      no
-
-# Automatically login the default user (without entering
-# the password. Set to "yes" to enable this feature
-#auto_login          no
-
-# current theme, use comma separated list to specify a set to 
-# randomly choose from
-#current_theme       default
-current_theme       archlinux-simplyblack
-
-# Lock file
-lockfile            /run/lock/slim.lock
-
-# Log file
-logfile             /var/log/slim.log
-EOF
-}
-
-set_netcfg() {
-    cat > /etc/network.d/wired <<EOF
-CONNECTION='ethernet'
-DESCRIPTION='Ethernet with DHCP'
-INTERFACE='eth0'
-IP='dhcp'
-EOF
-
-    chmod 600 /etc/network.d/wired
-
-    cat > /etc/conf.d/netcfg <<EOF
-# Enable these netcfg profiles at boot time.
-#   - prefix an entry with a '@' to background its startup
-#   - set to 'last' to restore the profiles running at the last shutdown
-#   - set to 'menu' to present a menu (requires the dialog package)
-# Network profiles are found in /etc/network.d
-NETWORKS=()
-
-# Specify the name of your wired interface for net-auto-wired
-WIRED_INTERFACE="eth0"
-
-# Specify the name of your wireless interface for net-auto-wireless
-WIRELESS_INTERFACE="$WIRELESS_DEVICE"
-
-# Array of profiles that may be started by net-auto-wireless.
-# When not specified, all wireless profiles are considered.
-#AUTO_PROFILES=("profile1" "profile2")
-EOF
-}
-
 set_root_password() {
     local password="$1"; shift
 
@@ -885,7 +696,7 @@ create_user() {
     local name="$1"; shift
     local password="$1"; shift
 
-    useradd -m -s /bin/zsh -G adm,systemd-journal,wheel,rfkill,games,network,video,audio,optical,floppy,storage,scanner,power,adbusers,wireshark "$name"
+    useradd -m -s /bin/zsh -G adm,systemd-journal,wheel,rfkill,games,network,video,audio,optical,floppy,storage,scanner,power "$name"
     echo -en "$password\n$password" | passwd "$name"
 }
 
@@ -894,7 +705,15 @@ update_locate() {
 }
 
 get_uuid() {
-    blkid -o export "$1" | grep UUID | awk -F= '{print $2}'
+    if [ -z "$1" ]
+    then
+        echo "Expected parameter to get_uuid()"
+        exit -1
+    fi
+
+    blkid -o export "$1" | grep '^UUID=' | awk -F= '{print $2}'
+
+#    lsblk -n -o UUID "$1"
 }
 
 set -ex
